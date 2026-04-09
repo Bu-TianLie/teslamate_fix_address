@@ -1,0 +1,31 @@
+[Unit]
+Description=TeslaMate Geocoder Worker
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=teslamate
+Group=teslamate
+WorkingDirectory=/opt/teslamate-geocoder
+EnvironmentFile=/opt/teslamate-geocoder/.env
+ExecStart=/usr/local/bin/teslamate-geocoder \
+    --batch-size 10 \
+    --qps 3 \
+    --metrics \
+    --metrics-addr 0.0.0.0:9090
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=teslamate-geocoder
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/teslamate-geocoder
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

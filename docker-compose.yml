@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  # ---- TeslaMate (existing, reference only) ----
+  # teslamate:
+  #   image: teslamate/teslamate:latest
+  #   ...
+
+  # ---- Geocoder Worker ----
+  geocoder:
+    build: .
+    container_name: teslamate-geocoder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TENCENT_MAP_KEY: ${TENCENT_MAP_KEY:-}
+      AMAP_KEY: ${AMAP_KEY:-}
+      BAIDU_AK: ${BAIDU_AK:-}
+      PROVIDER_ORDER: ${PROVIDER_ORDER:-tencent,amap,baidu}
+      RUST_LOG: ${RUST_LOG:-teslamate_geocoder=info}
+    command:
+      - "--batch-size=10"
+      - "--qps=3"
+      - "--metrics"
+      - "--metrics-addr=127.0.0.1:9090"
+    ports:
+      - "9090:9090"
+    # depends_on:
+    #   - db
+    networks:
+      - teslamate
+
+networks:
+  teslamate:
+    driver: bridge

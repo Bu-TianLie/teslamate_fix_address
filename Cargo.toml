@@ -1,0 +1,39 @@
+[package]
+name = "teslamate-geocoder"
+version = "0.1.0"
+edition = "2021"
+description = "Geocoding worker for TeslaMate in China (Tencent / Amap / Baidu)"
+license = "MIT"
+
+[[bin]]
+name = "teslamate-geocoder"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.50", features = ["full"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "chrono","rust_decimal"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+dotenv = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+prometheus = "0.13"
+tokio-metrics = "0.3"
+hyper = { version = "0.14", features = ["server", "http1", "tcp"] }
+async-trait = "0.1.68"
+rust_decimal = "1.37"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+incremental = true
+debug = 1
