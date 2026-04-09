@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -15,7 +17,8 @@ impl TencentProvider {
         Self {
             key,
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(5))
                 .build()
                 .expect("failed to build reqwest client"),
         }

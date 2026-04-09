@@ -97,6 +97,20 @@ impl GeocoderWorker {
         Ok(())
     }
 
+    /// One-shot backfill: enqueue all missing then process until queue empty.
+    pub async fn run_backfill(&self) -> Result<()> {
+        self.scan_and_enqueue().await?;
+        loop {
+            match self.process_batch().await {
+                Ok(0) => return Ok(()),
+                Ok(count) => {
+                    info!(count, "Backfill batch processed");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     // ------------------------------------------------------------
     // Process one batch
     // ------------------------------------------------------------

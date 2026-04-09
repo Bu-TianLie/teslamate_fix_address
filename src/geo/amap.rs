@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::coord::wgs84_to_gcj02;
@@ -61,6 +61,7 @@ impl GeoProvider for AmapProvider {
         }
 
         let regeocode = resp.regeocode.ok_or_else(|| anyhow::anyhow!("Amap: empty result"))?;
+        let raw: serde_json::Value = serde_json::to_value(&regeocode)?;
         let comp = regeocode.address_component;
 
         debug!(address = %regeocode.formatted_address, "Amap geocode OK");
@@ -78,7 +79,7 @@ impl GeoProvider for AmapProvider {
             neighbourhood: comp.neighborhood.as_ref().and_then(|n| n.name.clone()),
             latitude: None,
             longitude: None,
-            raw: serde_json::json!({}),
+            raw: raw,
             state_district: None,
             // town: comp.township,
             // village: None,
@@ -95,13 +96,13 @@ struct AmapResponse {
     regeocode: Option<AmapRegeocode>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct AmapRegeocode {
     formatted_address: String,
     address_component: AmapAddressComponent,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct AmapAddressComponent {
     province: Option<String>,
     city: Option<String>,
@@ -112,13 +113,13 @@ struct AmapAddressComponent {
     neighborhood: Option<AmapNeighborhood>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct AmapStreetNumber {
     street: Option<String>,
     number: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct AmapNeighborhood {
     name: Option<String>,
 }

@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::coord::wgs84_to_bd09;
@@ -62,6 +62,7 @@ impl GeoProvider for BaiduProvider {
         }
 
         let result = resp.result.ok_or_else(|| anyhow::anyhow!("Baidu: empty result"))?;
+        let raw = serde_json::to_value(&result)?;
         let comp = result.address_component;
 
         debug!(address = %result.formatted_address, "Baidu geocode OK");
@@ -79,7 +80,7 @@ impl GeoProvider for BaiduProvider {
             neighbourhood: None,
             latitude: None,
             longitude: None,
-            raw: serde_json::json!({}),
+            raw: raw,
             state_district: None,
         })
     }
@@ -94,13 +95,13 @@ struct BaiduResponse {
     result: Option<BaiduResult>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct BaiduResult {
     formatted_address: String,
     address_component: BaiduAddressComponent,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct BaiduAddressComponent {
     province: Option<String>,
     city: Option<String>,

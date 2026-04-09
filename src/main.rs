@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
 
     if cli.backfill {
         info!("Running one-time backfill...");
-        worker.scan_and_enqueue().await?;
+        worker.run_backfill().await?;
         info!("Backfill complete");
         return Ok(());
     }
