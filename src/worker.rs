@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,6 +9,7 @@ use tracing::{debug, error, info, warn};
 
 
 use crate::db;
+use crate::geo::geohash;
 use crate::geo::provider::{GeoProvider, GeocodeResult};
 use crate::util::{cache::AddressCache, limiter::RateLimiter, metrics, retry::with_retry};
 
@@ -21,8 +23,35 @@ pub struct WorkerConfig {
     pub max_retries: u32,
     pub scan_interval_secs: u64,
     pub dry_run: bool,
+    /// GeoHash clustering precision (1..12). Default 7 ≈ 153m.
+    pub cluster_precision: usize,
 }
 
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: 10,
+            qps_limit: 3,
+            max_retries: 3,
+            scan_interval_secs: 30,
+            dry_run: false,
+            cluster_precision: 7,
+        }
+    }
+}
+
+
+// ================================================================
+// Cluster
+// ================================================================
+
+/// A group of queue items sharing the same GeoHash cluster.
+struct Cluster {
+    /// All items in this cluster.
+    items: Vec<db::QueueItem>,
+    /// The representative coordinate (centroid) to geocode.
+    centroid: (f64, f64),
+}
 // ================================================================
 // Worker
 // ================================================================
@@ -56,7 +85,10 @@ impl GeocoderWorker {
     // ------------------------------------------------------------
 
     pub async fn run(&self) -> Result<()> {
-        info!("Worker started, entering main loop");
+        info!(
+            cluster_precision = self.config.cluster_precision,
+            "Worker started, entering main loop"
+        );
 
         // Initial backfill
         self.scan_and_enqueue().await?;
@@ -124,56 +156,102 @@ impl GeocoderWorker {
         }
 
         info!(count = items.len(), "Processing batch");
+        // ---- Step 1: Filter out items already cached ----
+        let mut to_geocode: Vec<db::QueueItem> = Vec::with_capacity(items.len());
 
         for item in &items {
             // Check for duplicates already processed in this batch
             if let Some(cached_id) = self.cache.get(item.latitude, item.longitude).await {
                 debug!(id = item.id, address_id = cached_id, "Cache hit");
-                if !self.config.dry_run {
-                    db::update_drive_address(&self.pool, item.drive_id, &item.address_type, cached_id).await?;
-                    db::mark_done(&self.pool, item.id).await?;
-                }
+                self.apply_address(item, cached_id).await?;
                 continue;
             }
 
             // Check DB cache
-            if let Some(existing_id) = db::find_address_by_coord(&self.pool, item.latitude, item.longitude).await? {
+            if let Some(existing_id) = 
+                db::find_address_by_coord(&self.pool, item.latitude, item.longitude).await? 
+            {
                 debug!(id = item.id, address_id = existing_id, "DB cache hit");
                 self.cache.insert(item.latitude, item.longitude, existing_id).await;
-                if !self.config.dry_run {
-                    db::update_drive_address(&self.pool, item.drive_id, &item.address_type, existing_id).await?;
-                    db::mark_done(&self.pool, item.id).await?;
-                }
+                self.apply_address(item, existing_id).await?;
                 continue;
             }
+            to_geocode.push(item.clone());
 
-            // Geocode with retry + fallback
-            match self.geocode_with_retry(&item).await {
+
+        }
+        if to_geocode.is_empty() {
+            return Ok(items.len());
+        }
+        // ---- Step 2: Cluster by GeoHash ----
+        let clusters = self.build_clusters(&to_geocode);
+
+        info!(
+            items = to_geocode.len(),
+            clusters = clusters.len(),
+            "Clustered items"
+        );
+
+        // ---- Step 3: Geocode each cluster centroid, apply to all items ----
+        for cluster in &clusters {
+            // check if centroid is already cached
+            if let Some(cached_id) = 
+                self.cache.get(cluster.centroid.0, cluster.centroid.1).await
+            {
+                debug!(
+                    cluster_items = cluster.items.len(),
+                    address_id = cached_id,
+                    "Cluster centroid cache hit"
+                );
+                for item in &cluster.items {
+                    self.apply_address(item, cached_id).await?
+                }
+                continue;
+            } 
+                        // // Geocode with retry + fallback
+            match self.geocode_centroid(&cluster).await {
                 Ok(address_id) => {
                     metrics::record_success();
-                    self.cache.insert(item.latitude, item.longitude, address_id).await;
-                    if !self.config.dry_run {
-                        db::update_drive_address(&self.pool, item.drive_id, &item.address_type, address_id).await?;
-                        db::mark_done(&self.pool, item.id).await?;
+                    self.cache.insert(cluster.centroid.0, cluster.centroid.1, address_id).await;
+                    // if !self.config.dry_run {
+                    //     db::update_drive_address(&self.pool, item.drive_id, &item.address_type, address_id).await?;
+                    //     db::mark_done(&self.pool, item.id).await?;
+                    // }
+                    // Also cache each individual point
+                    for item in &cluster.items {
+                        self.cache
+                            .insert(item.latitude, item.longitude, address_id)
+                            .await;
                     }
+
                     info!(
-                        id = item.id,
-                        drive = item.drive_id,
+                        cluster_items = cluster.items.len(),
                         address_id,
-                        lat = item.latitude,
-                        lng = item.longitude,
-                        "Geocoded"
+                        lat = cluster.centroid.0,
+                        lng = cluster.centroid.1,
+                        "Cluster geocoded"
                     );
                 }
                 Err(e) => {
                     metrics::record_failure();
-                    error!(id = item.id, error = %e, "Geocode failed permanently");
-                    if !self.config.dry_run {
-                        db::mark_dead(&self.pool, item.id, &format!("{}", e)).await?;
+                    // error!(id = item.id, error = %e, "Geocode failed permanently");
+                    // if !self.config.dry_run {
+                    //     db::mark_dead(&self.pool, item.id, &format!("{}", e)).await?;
+                    // }
+                    error!(
+                        cluster_items = cluster.items.len(),
+                        error = %e,
+                        "Cluster geocode failed"
+                    );
+                    for item in &cluster.items {
+                        if !self.config.dry_run {
+                            db::mark_dead(&self.pool, item.id, &format!("{}", e)).await?;
+                        }
                     }
                 }
             }
         }
+
 
         // Update charging_processes addresses once per batch (not per item)
         if !self.config.dry_run {
@@ -186,12 +264,42 @@ impl GeocoderWorker {
     }
 
     // ------------------------------------------------------------
+    // Build GeoHash clusters
+    // ------------------------------------------------------------
+
+    fn build_clusters(&self, items: &[db::QueueItem]) -> Vec<Cluster> {
+        let precision = self.config.cluster_precision;
+        
+        let mut map: HashMap<String, Vec<db::QueueItem>> = HashMap::new();
+
+        for item in items {
+            let key = geohash::encode(item.latitude, item.longitude, precision);
+            map.entry(key).or_default().push(item.clone())
+        }
+        map.into_iter()
+            .map(|(_key,cluster_items)| {
+                let points:Vec<(f64,f64)> = cluster_items
+                    .iter()
+                    .map(|i| (i.latitude,i.longitude))
+                    .collect();
+                let centroid = geohash::centroid(&points);
+                Cluster {
+                    items: cluster_items,
+                    centroid,
+                }
+            }).collect()
+
+    }
+
+    // ------------------------------------------------------------
     // Geocode with retry across provider chain
     // ------------------------------------------------------------
 
-    async fn geocode_with_retry(&self, item: &db::QueueItem) -> Result<i32> {
+    async fn geocode_centroid(&self, cluster: &Cluster) -> Result<i32> {
+        let (lat, lng) = cluster.centroid;
+
         let result = with_retry(self.config.max_retries, 1000, || {
-            self.geocode_with_fallback(item.latitude, item.longitude)
+            self.geocode_with_fallback(lat, lng)
         })
         .await?;
 
@@ -201,8 +309,8 @@ impl GeocoderWorker {
 
         let address_id = db::insert_address(
             &self.pool,
-            item.latitude,
-            item.longitude,
+            lat,
+            lng,
             result.display_name.as_ref(),
             result.city.as_deref(),
             result.province.as_deref(),
@@ -219,6 +327,19 @@ impl GeocoderWorker {
 
         Ok(address_id)
     }
+
+    // ------------------------------------------------------------
+    // Apply address_id to a drive
+    // ------------------------------------------------------------
+
+    async fn apply_address(&self, item: &db::QueueItem, address_id: i32) -> Result<()> {
+        if !self.config.dry_run {
+            db::update_drive_address(&self.pool, item.drive_id, &item.address_type, address_id)
+                .await?;
+            db::mark_done(&self.pool, item.id).await?;
+        }
+        Ok(())
+    }   
 
     // ------------------------------------------------------------
     // Try each provider in order (fallback chain)

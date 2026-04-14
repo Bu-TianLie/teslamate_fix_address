@@ -4,6 +4,7 @@ mod geo;
 mod util;
 mod worker;
 
+
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
@@ -44,6 +45,10 @@ struct Cli {
     /// Run backfill once and exit
     #[arg(long, default_value_t = false)]
     backfill: bool,
+
+    /// GeoHash cluster precision (1..12). 7 ≈ 153m, 8 ≈ 38m
+    #[arg(long, default_value_t = 7)]
+    cluster_precision: usize,
 }
 
 #[tokio::main]
@@ -112,6 +117,7 @@ async fn main() -> Result<()> {
             max_retries: config.max_retries,
             scan_interval_secs: config.scan_interval_secs,
             dry_run: cli.dry_run,
+            cluster_precision: cli.cluster_precision,
         },
     );
 

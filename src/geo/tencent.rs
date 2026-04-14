@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info};
 use super::provider::{CoordSystem, GeocodeResult, GeoProvider};
 
 pub struct TencentProvider {
@@ -59,7 +59,7 @@ impl GeoProvider for TencentProvider {
         let result = resp.result.ok_or_else(|| anyhow::anyhow!("Tencent: empty result"))?;
         // let ad = result.ad_info;
         let raw = serde_json::to_value(&result)?;
-
+        info!(raw_data = %raw,"tencent raw data: ");
         debug!(address = %result.address, "Tencent geocode OK");
 
         Ok(GeocodeResult {
